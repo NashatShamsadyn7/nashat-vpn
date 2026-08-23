@@ -89,6 +89,11 @@ function buildConfig(node, mode = 'socks', opts = {}) {
     config.outbounds.push({ type: 'block', tag: 'block' });
   }
 
+  // Clash-API for live traffic stats (Feature E)
+  config.experimental = Object.assign({}, config.experimental, {
+    clash_api: { external_controller: '127.0.0.1:20900', secret: '' },
+  });
+
   return config;
 }
 

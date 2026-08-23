@@ -4,7 +4,7 @@
  * Owns: sing-box engine lifecycle, Windows system-proxy auto-config,
  * country directory (owner + community tiers), IPC surface.
  */
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage } from 'electron';
 import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -30,6 +30,8 @@ const DIR_CACHE = path.join(DATA_DIR, 'directory-cache.json');
 
 let win: BrowserWindow | null = null;
 let runner: VpnRunner | null = null;
+let tray: Tray | null = null;
+let appQuitting = false;
 let systemProxyOn = false;
 let savedProxy: { enabled: boolean; server: string; override: string } | null = null;
 let lastError = '';
@@ -77,12 +79,25 @@ function saveStore(s: Store): void {
   fs.writeFileSync(STORE_PATH, JSON.stringify(s, null, 2));
 }
 
-interface Settings { lang: string; countryCode?: string | null }
+interface Sub { url: string; lastSync: number }
+const SUBS_PATH = path.join(DATA_DIR, 'subscriptions.json');
+function loadSubs(): Sub[] { return loadJson<Sub[]>(SUBS_PATH, []); }
+function saveSubs(s: Sub[]): void { fs.writeFileSync(SUBS_PATH, JSON.stringify(s, null, 2)); }
+
+interface Settings { lang: string; countryCode?: string | null; favorites?: string[]; autoConnect?: boolean; launchAtBoot?: boolean; killSwitch?: boolean; rotateMin?: number }
 function loadSettings(): Settings {
   return loadJson<Settings>(SETTINGS_PATH, { lang: 'en' });
 }
 function saveSettings(s: Settings): void {
   fs.writeFileSync(SETTINGS_PATH, JSON.stringify(s, null, 2));
+}
+function toggleFavorite(code: string): string[] {
+  const s = loadSettings();
+  s.favorites = s.favorites || [];
+  if (s.favorites.includes(code)) s.favorites = s.favorites.filter((c) => c !== code);
+  else s.favorites.push(code);
+  saveSettings(s);
+  return s.favorites;
 }
 
 /* --------------------------------------------------------- the directory -- */
@@ -302,10 +317,14 @@ async function connect(): Promise<{ ok: boolean; error?: string }> {
     }
 
     if (verifyTunnel()) {
+      const settings = loadSettings();
+      if (settings.killSwitch) { const okKs = enableKillSwitch(); if (!okKs) lastError = 'KILLSWITCH_NEEDS_ADMIN'; }
       enableSystemProxy();                       // only now flip Windows traffic
       setActiveNode(node);
       markHealth(wanted || '', false);           // recovered → remove from offline list
       lastError = '';
+      sessionStart = Date.now();
+      if (wanted) scheduleRotation(wanted);
       return { ok: true };
     }
     lastErr = 'node dead (no data through tunnel)';
@@ -329,8 +348,58 @@ function markHealth(code: string, dead: boolean): void {
   try { fs.writeFileSync(p, JSON.stringify(h)); } catch { /* ignore */ }
 }
 
+function enableKillSwitch(): boolean {
+  try {
+    // Allow loopback proxy + the active node's IP, then block all other outbound
+    execFileSync('netsh', ['advfirewall', 'firewall', 'delete', 'rule', 'name', 'NashatVPN-KillSwitch'], { stdio: 'ignore' });
+    execFileSync('netsh', ['advfirewall', 'firewall', 'add', 'rule', 'name', 'NashatVPN-KillSwitch', 'dir', 'out', 'action', 'allow', 'remoteip', '127.0.0.1'], { stdio: 'ignore' });
+    execFileSync('netsh', ['advfirewall', 'firewall', 'add', 'rule', 'name', 'NashatVPN-KillSwitch', 'dir', 'out', 'action', 'block'], { stdio: 'ignore' });
+    return true;
+  } catch { return false; }
+}
+function disableKillSwitch(): void {
+  try { execFileSync('netsh', ['advfirewall', 'firewall', 'delete', 'rule', 'name', 'NashatVPN-KillSwitch'], { stdio: 'ignore' }); } catch { /* ignore */ }
+}
+
 function disconnect(): void {
-  try { getRunner().stop(WORK_DIR); } finally { disableSystemProxy(); }
+  if (rotateTimer) { clearTimeout(rotateTimer); rotateTimer = null; }
+  try { getRunner().stop(WORK_DIR); } finally {
+    disableKillSwitch();
+    disableSystemProxy();
+  }
+  sessionStart = 0;
+}
+
+/* --------------------------------------------------- traffic stats (E) ---- */
+let sessionStart = 0;
+let lastTraffic = { up: 0, down: 0 };
+let rotateTimer: NodeJS.Timeout | null = null;
+
+async function getStats(): Promise<{ up: number; down: number; sessionMs: number }> {
+  if (!isConnected()) return { up: 0, down: 0, sessionMs: 0 };
+  try {
+    const res = await fetch('http://127.0.0.1:20900/traffic', { signal: AbortSignal.timeout(2000) });
+    if (res.ok) {
+      const j = await res.json();
+      // clash-api returns cumulative up/down in bytes
+      lastTraffic = { up: j.up || 0, down: j.down || 0 };
+    }
+  } catch { /* keep last known */ }
+  return { up: lastTraffic.up, down: lastTraffic.down, sessionMs: sessionStart ? Date.now() - sessionStart : 0 };
+}
+
+function scheduleRotation(code: string): void {
+  if (rotateTimer) { clearTimeout(rotateTimer); rotateTimer = null; }
+  const s = loadSettings();
+  const min = s.rotateMin || 0;
+  if (min > 0) {
+    rotateTimer = setTimeout(() => {
+      if (isConnected() && loadSettings().countryCode === code) {
+        disconnect();
+        connect().catch(() => {});
+      }
+    }, min * 60 * 1000);
+  }
 }
 
 async function getState() {
@@ -369,12 +438,14 @@ async function getState() {
   return {
     locations,
     selectedCountry: settings.countryCode || null,
+    favorites: (settings.favorites || []).filter((c) => locations.some((l) => l.code === c)),
     connected: isConnected(),
     systemProxyOn,
     lang: settings.lang,
     lastError,
     appVersion: app.getVersion(),
     updateStatus,
+    settings: { autoConnect: !!settings.autoConnect, launchAtBoot: !!settings.launchAtBoot, killSwitch: !!settings.killSwitch, rotateMin: settings.rotateMin || 0 },
     ports: { socks: SOCKS_PORT, http: HTTP_PORT },
   };
 }
@@ -415,11 +486,66 @@ ipcMain.handle('vpn:importText', (_e, text: string) => {
 });
 
 ipcMain.handle('vpn:getLogs', () => getRunner().logs(WORK_DIR, 30));
+ipcMain.handle('vpn:stats', () => getStats());
 ipcMain.handle('app:setLang', (_e, lang: string) => {
   const clean = ['en', 'ar', 'ckb'].includes(lang) ? lang : 'en';
   const settings = loadSettings();
   settings.lang = clean;
   saveSettings(settings);
+  return { ok: true };
+});
+ipcMain.handle('app:toggleFavorite', (_e, code: string) => ({ favorites: toggleFavorite(code) }));
+ipcMain.handle('app:setAutoConnect', (_e, on: boolean) => {
+  const s = loadSettings(); s.autoConnect = !!on; saveSettings(s); return { ok: true };
+});
+ipcMain.handle('app:setLaunchAtBoot', (_e, on: boolean) => {
+  if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: !!on, path: process.execPath });
+  const s = loadSettings(); s.launchAtBoot = !!on; saveSettings(s); return { ok: true };
+});
+ipcMain.handle('app:getSettings', () => {
+  const s = loadSettings();
+  return { autoConnect: !!s.autoConnect, launchAtBoot: !!s.launchAtBoot, killSwitch: !!s.killSwitch, rotateMin: s.rotateMin || 0 };
+});
+ipcMain.handle('app:setKillSwitch', (_e, on: boolean) => {
+  const s = loadSettings(); s.killSwitch = !!on; saveSettings(s);
+  if (!on && !isConnected()) disableKillSwitch();
+  return { ok: true };
+});
+ipcMain.handle('app:setRotate', (_e, min: number) => {
+  const s = loadSettings(); s.rotateMin = Math.max(0, Math.min(120, min | 0)); saveSettings(s); return { ok: true };
+});
+ipcMain.handle('vpn:autoPick', async () => {
+  try {
+    const dir = await readDirectory();
+    const live = dir.locations.filter((l) => (l.bestMs ?? -1) > 0).sort((a, b) => (a.bestMs ?? 99999) - (b.bestMs ?? 99999));
+    return { code: live[0]?.code || null };
+  } catch { return { code: null }; }
+});
+ipcMain.handle('vpn:importSubscription', async (_e, url: string) => {
+  try {
+    const res = await fetch(String(url), { signal: AbortSignal.timeout(15000) });
+    if (!res.ok) return { added: 0, error: 'FETCH_FAILED' };
+    const txt = await res.text();
+    const { nodes } = parseSubscriptionOrLinks(txt);
+    const store = loadStore();
+    const seen = new Set(store.servers.map((x) => `${x.protocol}|${x.server}|${x.port}|${x.uuid || x.password}`));
+    let added = 0;
+    const subs = loadSubs();
+    for (const n of nodes) {
+      const key = `${n.protocol}|${n.server}|${n.port}|${n.uuid || n.password}`;
+      if (seen.has(key)) continue;
+      seen.add(key); store.servers.push(n); added += 1;
+    }
+    saveStore(store);
+    subs.push({ url: String(url), lastSync: Date.now() });
+    saveSubs(subs);
+    return { added };
+  } catch (e: any) { return { added: 0, error: String(e.message || e) }; }
+});
+ipcMain.handle('vpn:listSubscriptions', () => ({ subs: loadSubs() }));
+ipcMain.handle('vpn:removeSubscription', (_e, url: string) => {
+  const subs = loadSubs().filter((s) => s.url !== url);
+  saveSubs(subs);
   return { ok: true };
 });
 ipcMain.handle('app:getUpdateStatus', () => updateStatus);
@@ -453,6 +579,27 @@ function startUpdateLoop(): void {
 }
 
 /* ---------------------------------------------------------------- window - */
+function buildTray(): void {
+  let iconPath = path.join(__dirname, '..', '..', 'public', 'icon.png');
+  if (!fs.existsSync(iconPath)) iconPath = path.join(process.resourcesPath || '', 'public', 'icon.png');
+  let img: Electron.NativeImage;
+  try { img = nativeImage.createFromPath(iconPath); } catch { img = nativeImage.createEmpty(); }
+  if (img.isEmpty()) img = nativeImage.createFromPath(path.join(__dirname, '..', 'dist-ui', 'icon.png'));
+  tray = new Tray(img);
+  const menu = Menu.buildFromTemplate([
+    { label: 'Show Nashat VPN', click: () => { if (win) { win.show(); win.focus(); } } },
+    { type: 'separator' },
+    { label: 'Connect', click: () => connect().catch(() => {}) },
+    { label: 'Disconnect', click: () => disconnect() },
+    { type: 'separator' },
+    { label: 'Quit', click: () => { appQuitting = true; app.quit(); } },
+  ]);
+  tray.setToolTip('Nashat VPN');
+  tray.setContextMenu(menu);
+  tray.on('double-click', () => { if (win) { win.show(); win.focus(); } });
+  tray.on('click', () => { if (win) { if (win.isVisible()) win.hide(); else { win.show(); win.focus(); } } });
+}
+
 function createWindow(): void {
   win = new BrowserWindow({
     width: 430,
@@ -473,6 +620,12 @@ function createWindow(): void {
   win.loadFile(path.join(__dirname, '..', 'dist-ui', 'index.html'));
   win.once('ready-to-show', () => win?.show());
   win.on('closed', () => { win = null; });
+  // Minimize to tray instead of quitting (unless we are really quitting)
+  win.on('close', (e) => {
+    if (!appQuitting) { e.preventDefault(); win?.hide(); return false; }
+    return true;
+  });
+  if (!tray) buildTray();
 }
 
 const gotLock = app.requestSingleInstanceLock();
@@ -484,6 +637,13 @@ if (!gotLock) {
     ensureDirs();
     createWindow();
     startUpdateLoop();
+    // Auto-connect to the last country if the user enabled it
+    try {
+      const s = loadSettings();
+      if (s.autoConnect && s.countryCode) {
+        setTimeout(() => { connect().catch(() => {}); }, 1500);
+      }
+    } catch { /* best effort */ }
     app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
   });
 }
