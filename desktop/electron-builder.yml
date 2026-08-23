@@ -6,6 +6,12 @@ directories:
   output: release
   buildResources: build
 
+# auto-updater source (electron-updater reads this)
+publish:
+  provider: github
+  owner: NashatShamsadyn7
+  repo: nashat-vpn
+
 files:
   - dist-electron/**/*
   - dist-ui/**/*

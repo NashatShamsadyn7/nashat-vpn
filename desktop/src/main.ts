@@ -9,6 +9,14 @@ import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
+// Silent background auto-updates straight from GitHub Releases
+// (same pattern as Nashat TV PC's electron-updater).
+const { autoUpdater } = require('electron-updater');
+autoUpdater.autoDownload = true;      // download quietly in the background
+autoUpdater.autoInstallOnAppQuit = true; // apply on next close — never mid-session
+
+let updateStatus = ''; // '', 'checking', 'available', 'none', 'downloaded', 'error'
+
 import { parseSubscriptionOrLinks, parseLink } from '../../core/parsers';
 import { buildConfig, HTTP_PORT, SOCKS_PORT } from '../../core/configBuilder';
 import { VpnRunner } from '../../core/runner';
@@ -306,6 +314,31 @@ ipcMain.handle('app:setLang', (_e, lang: string) => {
   saveSettings(settings);
   return { ok: true };
 });
+ipcMain.handle('app:getUpdateStatus', () => updateStatus);
+
+/* ------------------------------------------------------------- updater -- */
+autoUpdater.on('checking-for-update', () => { updateStatus = 'checking'; });
+autoUpdater.on('update-available', (info: any) => {
+  updateStatus = 'available';
+  console.log(`[updater] v${info.version} downloading in background…`);
+});
+autoUpdater.on('update-not-available', () => { updateStatus = 'none'; });
+autoUpdater.on('download-progress', (p: any) => {
+  if (Math.round(p.percent) % 25 === 0) console.log(`[updater] ${Math.round(p.percent)}%`);
+});
+autoUpdater.on('update-downloaded', (info: any) => {
+  updateStatus = 'downloaded';
+  console.log(`[updater] v${info.version} ready — installs on next close.`);
+  // Never interrupt an active VPN session; electron-updater applies on quit
+  // because autoInstallOnAppQuit is true.
+});
+autoUpdater.on('error', () => { updateStatus = 'error'; });
+
+function startUpdateLoop(): void {
+  // Check now and every 6 h. Failures are silent — offline users unaffected.
+  autoUpdater.checkForUpdatesAndNotify().catch(() => { updateStatus = 'error'; });
+  setInterval(() => { autoUpdater.checkForUpdatesAndNotify().catch(() => {}); }, 6 * 60 * 60 * 1000);
+}
 
 /* ---------------------------------------------------------------- window - */
 function createWindow(): void {
@@ -338,6 +371,7 @@ if (!gotLock) {
   app.whenReady().then(() => {
     ensureDirs();
     createWindow();
+    startUpdateLoop();
     app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
   });
 }
