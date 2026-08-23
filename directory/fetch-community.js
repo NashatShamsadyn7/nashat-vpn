@@ -160,17 +160,16 @@ const PROTOCOLS = ['vless', 'vmess', 'trojan', 'ss', 'reality'];
 /** Probe which per-country URL templates exist, using DE as the guinea pig. */
 async function probeTemplates() {
   const templates = [
+    // v2go: live-tested collector, files like Splitted-By-Country/de.txt
+    { url: (cc) => `https://raw.githubusercontent.com/Danialsamadi/v2go/main/Splitted-By-Country/${cc}.txt`, ccStyle: 'lower', protos: ['all'] },
     { url: (cc, p) => `https://raw.githubusercontent.com/yaney01/telegram-collector/main/countries/${cc}/${p}`, ccStyle: 'lower', protos: ['mixed'] },
     { url: (cc, p) => `https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/countries/${cc}/protocols/${p}`, ccStyle: 'lower', protos: ['vless', 'reality'] },
-    { url: (cc, p) => `https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/countries/${cc}/mixed`, ccStyle: 'lower', protos: ['mixed'] },
   ];
   for (const t of templates) {
-    for (const p of t.protos.slice(0, 1)) {
-      try {
-        const txt = await fetchText(t.url('de', p), 8000);
-        if (txt && txt.trim().length > 20) return t;
-      } catch { /* next */ }
-    }
+    try {
+      const txt = await fetchText(t.url('de', t.protos[0]), 8000);
+      if (txt && txt.trim().length > 20) return t;
+    } catch { /* next */ }
   }
   return null;
 }
@@ -245,13 +244,36 @@ async function probeTemplates() {
       return { code, total: map.size, alive };
     }));
     results.push(...tested);
-    process.stdout.write(`\rliveness: ${Math.min(i + PING_CONCURRENCY, entries.length)}/${entries.length} countries`);
+    process.stdout.write(`\rtcp liveness: ${Math.min(i + PING_CONCURRENCY, entries.length)}/${entries.length} countries`);
   }
   process.stdout.write('\n');
 
-  // D) keep ONLY countries with ≥1 alive node
-  const locations = results
-    .filter((r) => r.alive.length > 0)
+  // D) FULL verification: real engine + HTTPS through the tunnel.
+  //    A country ships only if ≥1 node passes THIS. ms = real data latency.
+  console.log('full tunnel verification (this is the slow, honest part)…');
+  const { verifyNode } = require('../scripts/verify-node');
+  const tcpAliveCountries = results.filter((r) => r.alive.length > 0).length;
+  let done = 0;
+  let verifyPort = 0;
+  const verified = await mapPool(results.filter((r) => r.alive.length > 0), 10, async (r) => {
+    // verify up to 3 of the fastest TCP-alive nodes per country
+    const candidates = r.alive.slice(0, QUICK ? 2 : 3);
+    const out = [];
+    for (const c of candidates) {
+      const link = serializeLink(c.n);
+      if (!link) continue;
+      const res = await verifyNode(link, 21500 + (verifyPort++ % 400));
+      if (res.ok) out.push({ n: c.n, ms: Math.max(res.ms, 1) });
+    }
+    done += 1;
+    process.stdout.write(`\rverified ${done}/${tcpAliveCountries} countries`);
+    return { code: r.code, total: r.total, alive: out };
+  });
+  process.stdout.write('\n');
+
+  // E) keep ONLY countries with ≥1 fully-verified node
+  const locations = verified
+    .filter((r) => r && r.alive.length > 0)
     .map((r) => ({
       code: r.code,
       country: COUNTRY_NAMES[r.code] || r.code,
@@ -259,8 +281,7 @@ async function probeTemplates() {
       tier: 'community',
       count: r.total,
       bestMs: r.alive[0].ms,
-      // rank: alive first (fastest first); cap stored links to keep file lean
-      nodes: r.alive.slice(0, QUICK ? 4 : 8).map((x) => ({ link: serializeLink(x.n), name: x.n.name })),
+      nodes: r.alive.slice(0, QUICK ? 3 : 6).map((x) => ({ link: serializeLink(x.n), name: x.n.name })),
     }))
     .sort((a, b) => (a.bestMs || 99999) - (b.bestMs || 99999));
 
@@ -269,7 +290,8 @@ async function probeTemplates() {
   console.log(`\nwrote ${outPath}: ${locations.length} WORKING countries`);
   console.log(locations.slice(0, 15).map((c) => `${c.flag} ${c.code} ${String(c.count).padStart(4)} nodes  ${c.bestMs}ms`).join('\n'));
 
-  /* Minimal share-link serializer (enough to re-import into sing-box). */
+  /** Minimal share-link serializer (enough to re-import into sing-box).
+   *  Exported so verify tooling can rebuild links for parsed nodes. */
   function serializeLink(node) {
     switch (node.protocol) {
       case 'vless': {
@@ -277,10 +299,13 @@ async function probeTemplates() {
           type: node.transport?.type || 'tcp',
           security: node.tls?.reality?.enabled ? 'reality' : node.tls?.enabled ? 'tls' : 'none',
           sni: node.tls?.serverName || '', fp: node.tls?.fingerprint || 'chrome', flow: node.flow || '',
+          allowInsecure: node.tls?.insecure ? '1' : '0',
         });
         if (node.tls?.reality?.enabled) { q.set('pbk', node.tls.reality.publicKey || ''); q.set('sid', node.tls.reality.shortId || ''); }
         if (node.transport?.path) q.set('path', node.transport.path);
         if (node.transport?.host) q.set('host', String(node.transport.host));
+        const hs = node.transport?.type === 'ws' && node.transport.headers?.Host;
+        if (hs) q.set('host', String(hs));
         return `vless://${encodeURIComponent(node.uuid)}@${node.server}:${node.port}?${q}#${encodeURIComponent(node.name)}`;
       }
       case 'vmess':
@@ -290,14 +315,19 @@ async function probeTemplates() {
           path: node.transport?.path || '', host: node.transport?.host || '',
           tls: node.tls?.enabled ? 'tls' : '',
         })).toString('base64');
-      case 'trojan':
-        return `trojan://${encodeURIComponent(node.password)}@${node.server}:${node.port}?sni=${encodeURIComponent(node.tls?.serverName || node.server)}#${encodeURIComponent(node.name)}`;
+      case 'trojan': {
+        const q = new URLSearchParams({ sni: node.tls?.serverName || node.server, fp: node.tls?.fingerprint || 'chrome', allowInsecure: node.tls?.insecure ? '1' : '0' });
+        if (node.transport?.type === 'ws') { q.set('type', 'ws'); q.set('path', node.transport.path || '/'); }
+        return `trojan://${encodeURIComponent(node.password)}@${node.server}:${node.port}?${q}#${encodeURIComponent(node.name)}`;
+      }
       case 'shadowsocks':
         return `ss://${Buffer.from(`${node.method}:${node.password}`).toString('base64')}@${node.server}:${node.port}#${encodeURIComponent(node.name)}`;
       case 'hysteria2':
-        return `hysteria2://${encodeURIComponent(node.password || '')}@${node.server}:${node.port}?sni=${encodeURIComponent(node.tls?.serverName || node.server)}#${encodeURIComponent(node.name)}`;
+        return `hysteria2://${encodeURIComponent(node.password || '')}@${node.server}:${node.port}?sni=${encodeURIComponent(node.tls?.serverName || node.server)}&insecure=${node.tls?.insecure?'1':'0'}#${encodeURIComponent(node.name)}`;
       default:
         return '';
     }
   }
+
+  module.exports = { serializeLink };
 })();
