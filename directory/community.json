@@ -30,6 +30,20 @@
       ]
     },
     {
+      "code": "DE",
+      "country": "Germany",
+      "flag": "🇩🇪",
+      "tier": "community",
+      "count": 1,
+      "bestMs": 1823,
+      "nodes": [
+        {
+          "link": "ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNToxaGhycXJva2ozYWc=@209.46.102.22:8388#%F0%9F%87%A9%F0%9F%87%AADE-209.46.102.22-0121",
+          "name": "🇩🇪DE-209.46.102.22-0121"
+        }
+      ]
+    },
+    {
       "code": "PL",
       "country": "Poland",
       "flag": "🇵🇱",
@@ -76,6 +90,20 @@
         {
           "link": "ss://YWVzLTI1Ni1jZmI6cXdlclJFV1FAQA==@218.237.185.230:4652#%F0%9F%87%B0%F0%9F%87%B7KR-218.237.185.230-0180",
           "name": "🇰🇷KR-218.237.185.230-0180"
+        }
+      ]
+    },
+    {
+      "code": "EE",
+      "country": "Estonia",
+      "flag": "🇪🇪",
+      "tier": "community",
+      "count": 1,
+      "bestMs": 2609,
+      "nodes": [
+        {
+          "link": "trojan://oiiaB38ywjEHCWRs_O_a_1113_Il_KeyyyHop_Bes1@109.206.241.10:449?sni=russiapower.accesscam.org#%F0%9F%87%AA%F0%9F%87%AA%E7%88%B1%E6%B2%99%E5%B0%BC%E4%BA%9A%E4%B8%A8yoyapai.com%5Cr",
+          "name": "🇪🇪爱沙尼亚丨yoyapai.com\\r"
         }
       ]
     },
