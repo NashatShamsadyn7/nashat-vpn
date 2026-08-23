@@ -21,7 +21,8 @@ import { parseSubscriptionOrLinks, parseLink } from '../../core/parsers';
 import { buildConfig, HTTP_PORT, SOCKS_PORT } from '../../core/configBuilder';
 import { VpnRunner } from '../../core/runner';
 
-const DATA_DIR = path.join(app.getPath('userData'), 'data');
+// One shared data root for CLI + app (userData would vary by productName).
+const DATA_DIR = path.join(app.getPath('appData'), 'nashat-vpn', 'data');
 const WORK_DIR = path.join(DATA_DIR, 'runtime');
 const STORE_PATH = path.join(DATA_DIR, 'servers.json');
 const SETTINGS_PATH = path.join(DATA_DIR, 'settings.json');
