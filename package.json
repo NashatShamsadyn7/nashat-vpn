@@ -1,0 +1,19 @@
+{
+  "name": "nashat-vpn",
+  "version": "1.0.0",
+  "description": "**Free, strong VPN + proxy for Windows — your servers, your rules.** International-ready (كوردی · العربية · English). No paid subscriptions, no sketchy free-VPN apps: you run the open-source `sing-box` engine locally and connect to servers **you** control (a free-forever cloud VPS works great).",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "type": "commonjs",
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "postject": "^1.0.0-alpha.6"
+  }
+}

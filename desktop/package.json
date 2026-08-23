@@ -1,0 +1,36 @@
+{
+  "name": "nashat-vpn",
+  "productName": "Nashat VPN",
+  "version": "1.1.0",
+  "description": "Free, strong VPN + proxy — your servers, your rules. كوردی · العربية · English",
+  "author": "Nashat Shamsadyn Ahmed <nashatgameryt17@gmail.com>",
+  "homepage": "https://iosbb0.web.app",
+  "license": "MIT",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "build:ui": "vite build",
+    "build:main": "node esbuild-main.cjs",
+    "build": "npm run build:ui && npm run build:main",
+    "dist": "npm run build && electron-builder --win nsis",
+    "start": "npm run build && electron ."
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.3"
+  },
+  "allowScripts": {
+    "electron@33.4.11": true,
+    "esbuild@0.24.2": true,
+    "esbuild@0.25.12": true
+  },
+  "dependencies": {
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  }
+}

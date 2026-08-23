@@ -1,0 +1,27 @@
+# Node
+node_modules/
+npm-debug.log*
+
+# Build outputs
+desktop/dist-ui/
+desktop/dist-electron/
+desktop/release/
+desktop/node_modules/
+dist/
+*.blockmap
+
+# Engine binaries (downloaded, not committed — see README)
+engine/*.exe
+desktop/public/flags/
+
+# Secrets & local state
+.env
+.env.*
+KEYS-AND-SECRETS*
+*.key
+.nashat-vpn/
+directory/community.json.bak
+
+# OS junk
+Thumbs.db
+.DS_Store

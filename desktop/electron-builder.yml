@@ -1,0 +1,39 @@
+appId: com.nashat.vpn
+productName: Nashat VPN
+copyright: Nashat Shamsadyn Ahmed
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - dist-electron/**/*
+  - dist-ui/**/*
+  - "!**/*.map"
+
+# the VPN engine + country directory ship inside the app's resources
+extraResources:
+  - from: ../engine/sing-box.exe
+    to: engine/sing-box.exe
+  - from: ../directory/community.json
+    to: directory/community.json
+  - from: ../directory/servers.json
+    to: directory/servers.json
+
+win:
+  icon: build/icon.ico
+  artifactName: NashatVPN-Setup-${version}.${ext}
+  target:
+    - nsis
+
+nsis:
+  oneClick: false                  # real install wizard with steps
+  perMachine: false                # per-user install: no admin needed
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: Nashat VPN
+  runAfterFinish: true             # app opens right after install
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  installerHeaderIcon: build/icon.ico

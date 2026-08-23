@@ -1,0 +1,24 @@
+{
+  "_how": "This file is the heart of Nashat VPN's country list. Host it in your GitHub repo (NashatShamsadyn7/nashat-vpn → directory/servers.json). Every installed app fetches it on launch and shows these locations as countries with flags. To add a country: install your VPS with server/install.sh, paste the printed vless:// link below under a new location, commit. All apps update themselves.",
+  "updated": "2026-08-23T00:00:00Z",
+  "locations": [
+    {
+      "code": "AE",
+      "country": "United Arab Emirates",
+      "countryAr": "الإمارات",
+      "countryKu": "ئەمارات",
+      "city": "Dubai",
+      "flag": "🇦🇪",
+      "nodes": []
+    },
+    {
+      "code": "TR",
+      "country": "Türkiye",
+      "countryAr": "تركيا",
+      "countryKu": "تورکیا",
+      "city": "Istanbul",
+      "flag": "🇹🇷",
+      "nodes": []
+    }
+  ]
+}
