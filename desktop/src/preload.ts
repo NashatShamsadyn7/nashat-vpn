@@ -12,4 +12,6 @@ contextBridge.exposeInMainWorld('nashat', {
   importText: (text: string) => ipcRenderer.invoke('vpn:importText', text),
   getLogs: () => ipcRenderer.invoke('vpn:getLogs'),
   setLang: (lang: string) => ipcRenderer.invoke('app:setLang', lang),
+  getUpdateStatus: () => ipcRenderer.invoke('app:getUpdateStatus'),
+  checkUpdate: () => ipcRenderer.invoke('app:checkUpdate'),
 });

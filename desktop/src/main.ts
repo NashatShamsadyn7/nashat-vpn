@@ -135,8 +135,25 @@ async function readDirectory(): Promise<{ updated: string; locations: Location[]
     }
   } catch { /* offline — cache is fine */ }
 
-  // merge: fast tier first
-  const merged = [...owner.filter((l) => l.nodes?.length !== undefined), ...community];
+  // merge: fast tier first, then community — deduped by country code
+  // (different community sources can tag the same country; combine their nodes)
+  const byCode = new Map<string, Location>();
+  for (const l of [...owner, ...community]) {
+    const existing = byCode.get(l.code);
+    if (!existing) { byCode.set(l.code, { ...l, nodes: [...(l.nodes || [])] }); continue; }
+    // merge node lists without dupes
+    const seen = new Set((existing.nodes || []).map((n: any) => (typeof n === 'string' ? n : n.link)));
+    for (const n of l.nodes || []) {
+      const link = typeof n === 'string' ? n : n.link;
+      if (link && !seen.has(link)) { (existing.nodes as any[]).push(n); seen.add(link); }
+    }
+    // keep the better latency / count
+    if ((l.bestMs ?? 99999) < (existing.bestMs ?? 99999)) existing.bestMs = l.bestMs;
+    existing.count = (existing.nodes as any[]).length;
+  }
+  const merged = [...byCode.values()];
+  // fast tier first
+  merged.sort((a, b) => (a.tier === 'fast' ? -1 : 1) - (b.tier === 'fast' ? -1 : 1));
   return { updated, locations: merged };
 }
 
@@ -287,15 +304,29 @@ async function connect(): Promise<{ ok: boolean; error?: string }> {
     if (verifyTunnel()) {
       enableSystemProxy();                       // only now flip Windows traffic
       setActiveNode(node);
+      markHealth(wanted || '', false);           // recovered → remove from offline list
       lastError = '';
       return { ok: true };
     }
     lastErr = 'node dead (no data through tunnel)';
     getRunner().stop(WORK_DIR);                  // dead node → clean up, try next
   }
+  if (wanted) markHealth(wanted, true);          // whole country offline for 30 min
   lastError = `all ${maxTry} nodes failed — ${lastErr}`;
   disableSystemProxy();
   return { ok: false, error: lastError };
+}
+
+/** health.json: countries that failed everything get a 30-min cooldown,
+ *  then they are probed again automatically (restore-on-recover). */
+function markHealth(code: string, dead: boolean): void {
+  if (!code) return;
+  const p = path.join(DATA_DIR, 'health.json');
+  let h: Record<string, { deadUntil?: number }> = {};
+  try { h = JSON.parse(fs.readFileSync(p, 'utf8')); } catch { /* fresh */ }
+  if (dead) h[code] = { deadUntil: Date.now() + 30 * 60 * 1000 };
+  else delete h[code];
+  try { fs.writeFileSync(p, JSON.stringify(h)); } catch { /* ignore */ }
 }
 
 function disconnect(): void {
@@ -305,22 +336,45 @@ function disconnect(): void {
 async function getState() {
   const settings = loadSettings();
   const dir = await readDirectory();
+
+  /* Health guard: a location is "offline" when every one of its nodes failed
+     TCP recently (cached in health.json). It disappears from the active grid,
+     and comes back automatically once any node answers again. */
+  interface HealthEntry { deadUntil?: number }
+  const health = loadJson<Record<string, HealthEntry>>(path.join(DATA_DIR, 'health.json'), {});
+  const now = Date.now();
+  let healthDirty = false;
+  const locations = dir.locations.map((l) => {
+    // probe at most every 10 min per country
+    const h = health[l.code] || {};
+    if (!h.deadUntil || h.deadUntil < now) {
+      delete health[l.code];
+      return {
+        code: l.code, flag: l.flag, country: l.country, countryAr: l.countryAr,
+        countryKu: l.countryKu, tier: l.tier || 'community',
+        bestMs: l.bestMs ?? -1, count: l.count ?? (l.nodes?.length || 0), offline: false,
+      };
+    }
+    healthDirty = true;
+    return {
+      code: l.code, flag: l.flag, country: l.country, countryAr: l.countryAr,
+      countryKu: l.countryKu, tier: l.tier || 'community',
+      bestMs: -1, count: 0, offline: true,
+    };
+  });
+  if (healthDirty || Object.keys(health).length !== Object.keys(loadJson(path.join(DATA_DIR, 'health.json'), {})).length) {
+    try { fs.writeFileSync(path.join(DATA_DIR, 'health.json'), JSON.stringify(health)); } catch { /* ignore */ }
+  }
+
   return {
-    locations: dir.locations.map((l) => ({
-      code: l.code,
-      flag: l.flag,
-      country: l.country,
-      countryAr: l.countryAr,
-      countryKu: l.countryKu,
-      tier: l.tier || 'community',
-      bestMs: l.bestMs ?? -1,
-      count: l.count ?? (l.nodes?.length || 0),
-    })),
+    locations,
     selectedCountry: settings.countryCode || null,
     connected: isConnected(),
     systemProxyOn,
     lang: settings.lang,
     lastError,
+    appVersion: app.getVersion(),
+    updateStatus,
     ports: { socks: SOCKS_PORT, http: HTTP_PORT },
   };
 }
@@ -369,6 +423,10 @@ ipcMain.handle('app:setLang', (_e, lang: string) => {
   return { ok: true };
 });
 ipcMain.handle('app:getUpdateStatus', () => updateStatus);
+ipcMain.handle('app:checkUpdate', async () => {
+  try { await autoUpdater.checkForUpdates(); } catch { updateStatus = 'error'; }
+  return updateStatus;
+});
 
 /* ------------------------------------------------------------- updater -- */
 autoUpdater.on('checking-for-update', () => { updateStatus = 'checking'; });
