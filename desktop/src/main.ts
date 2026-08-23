@@ -226,23 +226,76 @@ function setActiveNode(node: any): void {
   saveStore(store);
 }
 
+/** REAL verification: push an actual HTTPS request through the tunnel. */
+function verifyTunnel(): boolean {
+  try {
+    const out = execFileSync(
+      'curl',
+      ['-s', '-m', '8', '-x', `socks5://127.0.0.1:${SOCKS_PORT}`, '-o', 'NUL', '-w', '%{http_code}', '--retry', '1',
+       'https://www.google.com/generate_204'],
+      { encoding: 'utf8', timeout: 12000, windowsHide: true },
+    );
+    return /^204/.test(out.trim());
+  } catch { return false; }
+}
+
+/**
+ * Connect with smart fallback: try up to 5 nodes for the chosen country.
+ * A node only counts as "connected" after verifyTunnel() passes —
+ * the user never sees Protected on a dead node again.
+ */
 async function connect(): Promise<{ ok: boolean; error?: string }> {
-  const node = (() => {
-    const s = loadStore();
-    return s.servers.find((x) => x.id === s.activeId) || s.servers[0] || null;
-  })();
-  if (!node) { lastError = 'NO_SERVERS'; return { ok: false, error: 'NO_SERVERS' }; }
   const r = getRunner();
   if (!r.enginePath) { lastError = 'ENGINE_MISSING'; return { ok: false, error: 'ENGINE_MISSING' }; }
-  try {
-    await r.start(buildConfig(node, 'socks'), WORK_DIR);
-    enableSystemProxy();
-    lastError = '';
-    return { ok: true };
-  } catch (e: any) {
-    lastError = String(e.message || e).split('\n')[0];
-    return { ok: false, error: lastError };
+
+  // Which country did the user pick?
+  const settings = loadSettings();
+  const wanted = settings.countryCode;
+  let candidates: any[] = [];
+  if (wanted) {
+    try {
+      const dir = await readDirectory();
+      const loc = dir.locations.find((l) => l.code === wanted);
+      if (loc?.nodes?.length) candidates = loc.nodes;
+    } catch { /* fall back to store below */ }
   }
+  // manual/CLI-imported servers still work: no countryCode → use store order
+  const store0 = loadStore();
+  if (!candidates.length) {
+    const active = store0.servers.find((x) => x.id === store0.activeId) || store0.servers[0];
+    candidates = active ? [active] : [];
+  }
+  if (!candidates.length) { lastError = 'NO_SERVERS'; return { ok: false, error: 'NO_SERVERS' }; }
+
+  const maxTry = Math.min(5, candidates.length);
+  let lastErr = '';
+  for (let i = 0; i < maxTry; i += 1) {
+    let node: any;
+    try {
+      const entry = candidates[i];
+      node = typeof entry === 'string' ? parseLink(entry) : entry.link ? parseLink(entry.link) : entry;
+    } catch { continue; }
+    if (!node || !node.server) continue;
+
+    try {
+      await r.start(buildConfig(node, 'socks'), WORK_DIR);
+    } catch (e: any) {
+      lastErr = String(e.message || e).split('\n')[0];
+      continue; // config rejected → next node
+    }
+
+    if (verifyTunnel()) {
+      enableSystemProxy();                       // only now flip Windows traffic
+      setActiveNode(node);
+      lastError = '';
+      return { ok: true };
+    }
+    lastErr = 'node dead (no data through tunnel)';
+    getRunner().stop(WORK_DIR);                  // dead node → clean up, try next
+  }
+  lastError = `all ${maxTry} nodes failed — ${lastErr}`;
+  disableSystemProxy();
+  return { ok: false, error: lastError };
 }
 
 function disconnect(): void {

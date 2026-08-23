@@ -1,0 +1,39 @@
+name: Refresh VPN directory
+
+# Rebuilds directory/community.json daily from open-source node lists
+# (mahdibland/V2RayAggregator, Epodonios/v2ray-configs). Every installed
+# Nashat VPN app fetches this file on launch — dead nodes get replaced
+# automatically without shipping an update.
+
+on:
+  schedule:
+    - cron: '0 3 * * *'   # 03:00 UTC daily
+  workflow_dispatch: {}    # manual run button
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build fresh directory
+        run: node directory/fetch-community.js --quick
+
+      - name: Commit if changed
+        run: |
+          git config user.name "nashat-vpn-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add directory/community.json
+          if git diff --cached --quiet; then
+            echo "No changes since yesterday."
+          else
+            git commit -m "chore: refresh community directory ($(date -u +%F))"
+            git push
+          fi
